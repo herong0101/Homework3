@@ -9,6 +9,7 @@ import quantstats as qs
 import gurobipy as gp
 import warnings
 import argparse
+import cvxpy as cp
 
 """
 Project Setup
@@ -63,39 +64,53 @@ class MyPortfolio:
         self.gamma = gamma
 
     def calculate_weights(self):
-        # Get the assets by excluding the specified column
+        # 排除指定的資產列
         assets = self.price.columns[self.price.columns != self.exclude]
 
-        # Calculate the portfolio weights
-        self.portfolio_weights = pd.DataFrame(
-            index=self.price.index, columns=self.price.columns
-        )
+        # 配置投資組合權重
+        self.portfolio_weights = pd.DataFrame(index=self.price.index, columns=self.price.columns)
+        # 添加最佳化部分
+        # 初始化模型
+        m = gp.Model("portfolio_optimization")
+        m.setParam('OutputFlag', 0)
+        weights = m.addVars(assets, name="weights", lb=0)
 
-        """
-        TODO: Complete Task 4 Below
-        """
+        # 計算期望收益和風險
+        covar_matrix = self.returns[assets].cov() * 252
+        expected_returns = self.returns[assets].mean() * 252
+        portfolio_var = gp.quicksum(covar_matrix.at[i, j] * weights[i] * weights[j] for i in assets for j in assets)
+        portfolio_ret = gp.quicksum(weights[i] * expected_returns[i] for i in assets)
 
-        """
-        TODO: Complete Task 4 Above
-        """
+        # 使用風險厭惡參數
+        gamma = 0.5  # 這個參數可根據您的風險承受能力調整
+
+        # 最佳化目標：最大化調整風險的預期收益
+        m.setObjective(portfolio_ret - gamma * portfolio_var, gp.GRB.MAXIMIZE)
+
+        # 添加預算約束
+        m.addConstr(weights.sum() == 1, "budget")
+
+        # 解決模型
+        m.optimize()
+
+        # 更新權重到 DataFrame 中
+        for v in weights.values():
+            asset_name = v.varName.replace("weights[", "").replace("]", "")
+            self.portfolio_weights.loc[:, asset_name] = v.x
 
         self.portfolio_weights.ffill(inplace=True)
         self.portfolio_weights.fillna(0, inplace=True)
 
     def calculate_portfolio_returns(self):
-        # Ensure weights are calculated
+        # 確保已計算權重
         if not hasattr(self, "portfolio_weights"):
             self.calculate_weights()
-
-        # Calculate the portfolio returns
+        # 計算投資組合收益
         self.portfolio_returns = self.returns.copy()
         assets = self.price.columns[self.price.columns != self.exclude]
         self.portfolio_returns["Portfolio"] = (
-            self.portfolio_returns[assets]
-            .mul(self.portfolio_weights[assets])
-            .sum(axis=1)
+            self.portfolio_returns[assets].mul(self.portfolio_weights[assets]).sum(axis=1)
         )
-
     def get_results(self):
         # Ensure portfolio returns are calculated
         if not hasattr(self, "portfolio_returns"):
